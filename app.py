@@ -2,11 +2,14 @@ import dash
 import time
 from dash import dcc, html
 from dash.dependencies import Input, Output
-from datetime import datetime
+from datetime import datetime, timedelta
 
-
-
-LOG_FILE_PATH = "/home/pyback/sandbox/app.log"
+# Log file options
+LOG_FILE_OPTIONS = {
+    "Sandbox Log": "/home/pyback/sandbox/app.log",
+    "Polars Example Log": "/home/pyback/polars-projects/polars-examples/polars.log",
+    "Cities Log": "/home/pyback/pandas-projects/cities/cities.log"
+}
 
 app = dash.Dash(__name__)
 app.title = "Live Log Viewer with Search"
@@ -15,6 +18,12 @@ app.layout = html.Div([
     html.H2("Live Log Viewer"),
 
     html.Div([
+        dcc.Dropdown(
+            id='log-file-dropdown',
+            options=[{'label': name, 'value': path} for name, path in LOG_FILE_OPTIONS.items()],
+            value=list(LOG_FILE_OPTIONS.values())[0],
+            style={'width': '40%', 'marginRight': '10px'}
+        ),
         dcc.Input(
             id='search-input',
             type='text',
@@ -28,6 +37,18 @@ app.layout = html.Div([
             end_date_placeholder_text="End Date",
             display_format='YYYY-MM-DD',
             style={'marginRight': '10px'}
+        ),
+        dcc.Input(
+            id='start-time',
+            type='text',
+            placeholder='Start Time (HH:MM:SS)',
+            style={'width': '20%', 'marginRight': '10px'}
+        ),
+        dcc.Input(
+            id='end-time',
+            type='text',
+            placeholder='End Time (HH:MM:SS)',
+            style={'width': '20%', 'marginRight': '10px'}
         ),
         dcc.Checklist(
             id='case-sensitive',
@@ -60,14 +81,17 @@ app.layout = html.Div([
     [Output('log-output', 'children'),
      Output('last-update', 'children')],
     [Input('interval-component', 'n_intervals'),
+     Input('log-file-dropdown', 'value'),
      Input('search-input', 'value'),
      Input('case-sensitive', 'value'),
      Input('date-picker-range', 'start_date'),
-     Input('date-picker-range', 'end_date')]
+     Input('date-picker-range', 'end_date'),
+     Input('start-time', 'value'),
+     Input('end-time', 'value')]
 )
-def update_logs(n, query, case_option, start_date, end_date):
+def update_logs(n, log_file_path, query, case_option, start_date, end_date, start_time, end_time):
     try:
-        with open(LOG_FILE_PATH, 'r', encoding='utf-8') as f:
+        with open(log_file_path, 'r', encoding='utf-8') as f:
             lines = f.readlines()
             log_lines = lines[-1000:]  # Limit for performance
 
@@ -78,27 +102,45 @@ def update_logs(n, query, case_option, start_date, end_date):
                 else:
                     log_lines = [line for line in log_lines if query.lower() in line.lower()]
 
-            # Filter by date range
+            # Extract timestamp with milliseconds
             def extract_timestamp(line):
-                # Adjust this pattern to match your log format
                 try:
-                    return datetime.strptime(line[:19], "%Y-%m-%d %H:%M:%S")
+                    ts_part = line.split(" | ")[0]
+                    return datetime.strptime(ts_part, "%Y-%m-%d %H:%M:%S.%f")
                 except:
                     return None
 
-            if start_date or end_date:
-                start_dt = datetime.strptime(start_date, "%Y-%m-%d") if start_date else None
-                end_dt = datetime.strptime(end_date, "%Y-%m-%d") if end_date else None
+            # Combine date and time
+            def parse_datetime(date_str, time_str, is_end=False):
+                try:
+                    if date_str:
+                        if time_str:
+                            return datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M:%S")
+                        else:
+                            if is_end:
+                                return datetime.strptime(date_str, "%Y-%m-%d") + timedelta(days=1) - timedelta(milliseconds=1)
+                            else:
+                                return datetime.strptime(date_str, "%Y-%m-%d")
+                    return None
+                except:
+                    return None
 
-                filtered_lines = []
-                for line in log_lines:
-                    ts = extract_timestamp(line)
-                    if not ts:
-                        continue
-                    if (not start_dt or ts.date() >= start_dt.date()) and \
-                       (not end_dt or ts.date() <= end_dt.date()):
-                        filtered_lines.append(line)
-                log_lines = filtered_lines
+            start_dt = parse_datetime(start_date, start_time)
+            end_dt = parse_datetime(end_date, end_time, is_end=True)
+
+            # Filter by time range
+            filtered_lines = []
+            for line in log_lines:
+                ts = extract_timestamp(line)
+                if ts is None:
+                    continue
+                if start_dt and ts < start_dt:
+                    continue
+                if end_dt and ts > end_dt:
+                    continue
+                filtered_lines.append(line)
+
+            log_lines = filtered_lines
 
             log_text = ''.join(log_lines) if log_lines else 'No matching log entries.'
             timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
